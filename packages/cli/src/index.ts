@@ -1,0 +1,44 @@
+import { registerUploadCommand } from "./commands/upload.js";
+import { Command } from "commander";
+import { registerConfigCommands } from "./commands/config.js";
+import { registerIndexingCommands } from "./commands/indexing.js";
+import { registerRetrievalCommands } from "./commands/retrieval.js";
+import { registerSearchCommands } from "./commands/search.js";
+import { registerLinkCommands } from "./commands/links.js";
+import { registerOrientationCommands } from "./commands/orientation.js";
+import { registerProfileCommands } from "./commands/profile.js";
+import { registerServeCommand } from "./commands/serve.js";
+import { registerStatusCommands } from "./commands/status.js";
+import { registerSyncCommands } from "./commands/sync.js";
+import { registerMcpCommand } from "./commands/mcp.js";
+import { createCliContext } from "./context.js";
+export {
+  getCommandResultFromHttpResponse,
+  type CommandHttpResult,
+} from "./http.js";
+
+export const program = new Command();
+const context = createCliContext(program);
+
+program
+  .name("vault-agent")
+  .version("0.1.0")
+  .option("--config <path>", "Path to config file")
+  .option("--endpoint <url>", "Server endpoint URL")
+  .option("--api-key <key>", "API key for authentication")
+  .option("--json", "Output as JSON");
+
+registerServeCommand(program, context);
+registerIndexingCommands(program, context);
+registerUploadCommand(program, context);
+registerSearchCommands(program, context);
+registerLinkCommands(program, context);
+registerOrientationCommands(program, context);
+registerProfileCommands(program, context);
+registerRetrievalCommands(program, context);
+registerConfigCommands(program, context);
+registerStatusCommands(program, context);
+registerSyncCommands(program, context);
+registerMcpCommand(program, context);
+
+export { program as default };

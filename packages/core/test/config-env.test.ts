@@ -1,0 +1,258 @@
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
+import {
+  ConfigManager,
+  applyEnvOverrides,
+  DEFAULT_CONFIG,
+} from "../src/config.js";
+import { ConfigError } from "../src/errors.js";
+
+describe("applyEnvOverrides", () => {
+  const originalEnv: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    const keys = Object.keys(process.env).filter((k) =>
+      k.startsWith("VAULT_AGENT_"),
+    );
+    for (const k of keys) {
+      originalEnv[k] = process.env[k];
+      delete process.env[k];
+    }
+  });
+
+  afterEach(() => {
+    const keys = Object.keys(process.env).filter((k) =>
+      k.startsWith("VAULT_AGENT_"),
+    );
+    for (const k of keys) {
+      delete process.env[k];
+    }
+    for (const [k, v] of Object.entries(originalEnv)) {
+      if (v !== undefined) process.env[k] = v;
+    }
+  });
+
+  it("applies VAULT_AGENT_SERVER_PORT with valid integer", () => {
+    process.env.VAULT_AGENT_SERVER_PORT = "9090";
+    process.env.VAULT_AGENT_VAULT_ROOT = "/tmp/test";
+    const result = applyEnvOverrides(structuredClone(DEFAULT_CONFIG));
+    expect(result.server.port).toBe(9090);
+  });
+
+  it("throws ConfigError for non-numeric VAULT_AGENT_SERVER_PORT", () => {
+    process.env.VAULT_AGENT_SERVER_PORT = "not-a-number";
+    process.env.VAULT_AGENT_VAULT_ROOT = "/tmp/test";
+    expect(() => applyEnvOverrides(structuredClone(DEFAULT_CONFIG))).toThrow();
+  });
+
+  it("applies VAULT_AGENT_EMBEDDING_ENABLED with 'true'", () => {
+    process.env.VAULT_AGENT_EMBEDDING_ENABLED = "true";
+    process.env.VAULT_AGENT_VAULT_ROOT = "/tmp/test";
+    const result = applyEnvOverrides(structuredClone(DEFAULT_CONFIG));
+    expect(result.embedding.enabled).toBe(true);
+  });
+
+  it("applies VAULT_AGENT_EMBEDDING_ENABLED with '1'", () => {
+    process.env.VAULT_AGENT_EMBEDDING_ENABLED = "1";
+    process.env.VAULT_AGENT_VAULT_ROOT = "/tmp/test";
+    const result = applyEnvOverrides(structuredClone(DEFAULT_CONFIG));
+    expect(result.embedding.enabled).toBe(true);
+  });
+
+  it("applies VAULT_AGENT_EMBEDDING_ENABLED with 'false'", () => {
+    process.env.VAULT_AGENT_EMBEDDING_ENABLED = "false";
+    process.env.VAULT_AGENT_VAULT_ROOT = "/tmp/test";
+    const result = applyEnvOverrides(structuredClone(DEFAULT_CONFIG));
+    expect(result.embedding.enabled).toBe(false);
+  });
+
+  it("applies VAULT_AGENT_EMBEDDING_ENABLED with '0'", () => {
+    process.env.VAULT_AGENT_EMBEDDING_ENABLED = "0";
+    process.env.VAULT_AGENT_VAULT_ROOT = "/tmp/test";
+    const result = applyEnvOverrides(structuredClone(DEFAULT_CONFIG));
+    expect(result.embedding.enabled).toBe(false);
+  });
+
+  it("throws ConfigError for invalid boolean value in VAULT_AGENT_EMBEDDING_ENABLED", () => {
+    process.env.VAULT_AGENT_EMBEDDING_ENABLED = "yes";
+    process.env.VAULT_AGENT_VAULT_ROOT = "/tmp/test";
+    expect(() => applyEnvOverrides(structuredClone(DEFAULT_CONFIG))).toThrow();
+  });
+
+  it("applies VAULT_AGENT_EMBEDDING_ALLOW_PRIVATE_NETWORK_ENDPOINT", () => {
+    process.env.VAULT_AGENT_EMBEDDING_ALLOW_PRIVATE_NETWORK_ENDPOINT = "true";
+    process.env.VAULT_AGENT_VAULT_ROOT = "/tmp/test";
+    const result = applyEnvOverrides(structuredClone(DEFAULT_CONFIG));
+    expect(result.embedding.allow_private_network_endpoint).toBe(true);
+  });
+
+  it("rejects invalid VAULT_AGENT_EMBEDDING_ALLOW_PRIVATE_NETWORK_ENDPOINT", () => {
+    process.env.VAULT_AGENT_EMBEDDING_ALLOW_PRIVATE_NETWORK_ENDPOINT = "yes";
+    process.env.VAULT_AGENT_VAULT_ROOT = "/tmp/test";
+    expect(() => applyEnvOverrides(structuredClone(DEFAULT_CONFIG))).toThrow(
+      ConfigError,
+    );
+  });
+
+  it("applies VAULT_AGENT_API_KEY", () => {
+    process.env.VAULT_AGENT_API_KEY = "test-api-key";
+    process.env.VAULT_AGENT_VAULT_ROOT = "/tmp/test";
+    const result = applyEnvOverrides(structuredClone(DEFAULT_CONFIG));
+    expect(result.server.apiKey).toBe("test-api-key");
+  });
+
+  it("applies VAULT_AGENT_LOG_LEVEL", () => {
+    process.env.VAULT_AGENT_LOG_LEVEL = "debug";
+    process.env.VAULT_AGENT_VAULT_ROOT = "/tmp/test";
+    const result = applyEnvOverrides(structuredClone(DEFAULT_CONFIG));
+    expect(result.server.logLevel).toBe("debug");
+  });
+
+  it("skips empty string env values", () => {
+    process.env.VAULT_AGENT_SERVER_PORT = "";
+    process.env.VAULT_AGENT_VAULT_ROOT = "/tmp/test";
+    const result = applyEnvOverrides(structuredClone(DEFAULT_CONFIG));
+    expect(result.server.port).toBe(DEFAULT_CONFIG.server.port);
+  });
+
+  it("applies VAULT_AGENT_VAULT_ROOT", () => {
+    process.env.VAULT_AGENT_VAULT_ROOT = "/my/vault/path";
+    const result = applyEnvOverrides(structuredClone(DEFAULT_CONFIG));
+    expect(result.vault.root).toBe("/my/vault/path");
+  });
+
+  it("applies VAULT_AGENT_SERVER_HOST", () => {
+    process.env.VAULT_AGENT_SERVER_HOST = "0.0.0.0";
+    process.env.VAULT_AGENT_VAULT_ROOT = "/tmp/test";
+    const result = applyEnvOverrides(structuredClone(DEFAULT_CONFIG));
+    expect(result.server.host).toBe("0.0.0.0");
+  });
+
+  it("applies VAULT_AGENT_CORS_ENABLED with 'true'", () => {
+    process.env.VAULT_AGENT_CORS_ENABLED = "true";
+    process.env.VAULT_AGENT_VAULT_ROOT = "/tmp/test";
+    const result = applyEnvOverrides(structuredClone(DEFAULT_CONFIG));
+    expect(result.cors.enabled).toBe(true);
+  });
+
+  it("throws ConfigError for invalid VAULT_AGENT_CORS_ENABLED", () => {
+    process.env.VAULT_AGENT_CORS_ENABLED = "maybe";
+    process.env.VAULT_AGENT_VAULT_ROOT = "/tmp/test";
+    expect(() => applyEnvOverrides(structuredClone(DEFAULT_CONFIG))).toThrow();
+  });
+
+  it("applies VAULT_AGENT_WATCH_ENABLED with 'false'", () => {
+    process.env.VAULT_AGENT_WATCH_ENABLED = "false";
+    process.env.VAULT_AGENT_VAULT_ROOT = "/tmp/test";
+    const result = applyEnvOverrides(structuredClone(DEFAULT_CONFIG));
+    expect(result.watch.enabled).toBe(false);
+  });
+
+  it("applies VAULT_AGENT_WATCH_DEBOUNCE_MS", () => {
+    process.env.VAULT_AGENT_WATCH_DEBOUNCE_MS = "5000";
+    process.env.VAULT_AGENT_VAULT_ROOT = "/tmp/test";
+    const result = applyEnvOverrides(structuredClone(DEFAULT_CONFIG));
+    expect(result.watch.debounce_ms).toBe(5000);
+  });
+
+  it("applies VAULT_AGENT_SYNC_ENABLED with 'true'", () => {
+    process.env.VAULT_AGENT_SYNC_ENABLED = "true";
+    process.env.VAULT_AGENT_VAULT_ROOT = "/tmp/test";
+    const result = applyEnvOverrides(structuredClone(DEFAULT_CONFIG));
+    expect(result.sync.enabled).toBe(true);
+  });
+
+  it("applies VAULT_AGENT_SYNC_REPO", () => {
+    process.env.VAULT_AGENT_SYNC_REPO = "/tmp/repo";
+    process.env.VAULT_AGENT_VAULT_ROOT = "/tmp/test";
+    const result = applyEnvOverrides(structuredClone(DEFAULT_CONFIG));
+    expect(result.sync.repo).toBe("/tmp/repo");
+  });
+
+  it("applies VAULT_AGENT_SYNC_WEBHOOK_SECRET", () => {
+    process.env.VAULT_AGENT_SYNC_WEBHOOK_SECRET = "secret-value";
+    process.env.VAULT_AGENT_VAULT_ROOT = "/tmp/test";
+    const result = applyEnvOverrides(structuredClone(DEFAULT_CONFIG));
+    expect(result.sync.webhook_secret).toBe("secret-value");
+  });
+
+  it("throws ConfigError for invalid VAULT_AGENT_WATCH_ENABLED", () => {
+    process.env.VAULT_AGENT_WATCH_ENABLED = "yes";
+    process.env.VAULT_AGENT_VAULT_ROOT = "/tmp/test";
+    expect(() => applyEnvOverrides(structuredClone(DEFAULT_CONFIG))).toThrow();
+  });
+
+  it("applies VAULT_AGENT_WATCH_MAX_BATCH_DELAY_MS", () => {
+    process.env.VAULT_AGENT_WATCH_MAX_BATCH_DELAY_MS = "30000";
+    process.env.VAULT_AGENT_VAULT_ROOT = "/tmp/test";
+    const result = applyEnvOverrides(structuredClone(DEFAULT_CONFIG));
+    expect(result.watch.max_batch_delay_ms).toBe(30000);
+  });
+
+  it("applies VAULT_AGENT_WATCH_IGNORE_INITIAL with 'false'", () => {
+    process.env.VAULT_AGENT_WATCH_IGNORE_INITIAL = "false";
+    process.env.VAULT_AGENT_VAULT_ROOT = "/tmp/test";
+    const result = applyEnvOverrides(structuredClone(DEFAULT_CONFIG));
+    expect(result.watch.ignore_initial).toBe(false);
+  });
+
+  it("applies VAULT_AGENT_SYNC_INTERVAL_SECONDS", () => {
+    process.env.VAULT_AGENT_SYNC_INTERVAL_SECONDS = "600";
+    process.env.VAULT_AGENT_VAULT_ROOT = "/tmp/test";
+    const result = applyEnvOverrides(structuredClone(DEFAULT_CONFIG));
+    expect(result.sync.interval_seconds).toBe(600);
+  });
+
+  it("applies VAULT_AGENT_SYNC_PULL_TIMEOUT_SECONDS", () => {
+    process.env.VAULT_AGENT_SYNC_PULL_TIMEOUT_SECONDS = "60";
+    process.env.VAULT_AGENT_VAULT_ROOT = "/tmp/test";
+    const result = applyEnvOverrides(structuredClone(DEFAULT_CONFIG));
+    expect(result.sync.pull_timeout_seconds).toBe(60);
+  });
+
+  it("applies VAULT_AGENT_SYNC_FAILURE_BACKOFF_SECONDS", () => {
+    process.env.VAULT_AGENT_SYNC_FAILURE_BACKOFF_SECONDS = "1800";
+    process.env.VAULT_AGENT_VAULT_ROOT = "/tmp/test";
+    const result = applyEnvOverrides(structuredClone(DEFAULT_CONFIG));
+    expect(result.sync.failure_backoff_seconds).toBe(1800);
+  });
+});
+
+describe("ConfigManager with env overrides", () => {
+  let testDir: string;
+
+  beforeEach(() => {
+    testDir = fs.mkdtempSync(path.join(os.tmpdir(), "vault-agent-cfg-"));
+    const keys = Object.keys(process.env).filter((k) =>
+      k.startsWith("VAULT_AGENT_"),
+    );
+    for (const k of keys) {
+      delete process.env[k];
+    }
+  });
+
+  afterEach(() => {
+    fs.rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it("loads config from file and applies env overrides", () => {
+    process.env.VAULT_AGENT_VAULT_ROOT = "/tmp/env-vault";
+    process.env.VAULT_AGENT_SERVER_PORT = "7777";
+
+    try {
+      const configPath = path.join(testDir, "config.toml");
+      const manager = new ConfigManager(configPath);
+      manager.set("vault.root", "/tmp/file-vault");
+      manager.set("server.port", "5555");
+
+      const config = manager.load();
+      expect(config.vault.root).toBe("/tmp/env-vault");
+      expect(config.server.port).toBe(7777);
+    } finally {
+      delete process.env.VAULT_AGENT_VAULT_ROOT;
+      delete process.env.VAULT_AGENT_SERVER_PORT;
+    }
+  });
+});

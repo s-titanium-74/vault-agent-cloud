@@ -1,0 +1,59 @@
+{
+  "name": "@vault-agent/server",
+  "version": "0.1.4",
+  "description": "HTTP and MCP server package for vault-agent.",
+  "type": "module",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./mcp/adapter": {
+      "types": "./dist/mcp/adapter.d.ts",
+      "import": "./dist/mcp/adapter.js"
+    },
+    "./mcp/stdio": {
+      "types": "./dist/mcp/stdio.d.ts",
+      "import": "./dist/mcp/stdio.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "package.json"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/s-titanium-74/vault-agent.git",
+    "directory": "packages/server"
+  },
+  "keywords": [
+    "markdown",
+    "vault",
+    "search",
+    "retrieval",
+    "mcp"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.0.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@vault-agent/core": "0.1.4",
+    "fastify": "^5.3.0",
+    "pino": "^9.6.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "tsup": "^8.4.0",
+    "typescript": "^5.8.0"
+  }
+}

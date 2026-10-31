@@ -1,0 +1,59 @@
+{
+  "name": "vault-agent-cloud",
+  "private": true,
+  "version": "0.1.4",
+  "type": "module",
+  "license": "MIT",
+  "workspaces": [
+    "packages/core",
+    "packages/server",
+    "packages/cli"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "clean": "node -e \"const fs=require('node:fs'); for (const dir of ['packages/core/dist','packages/server/dist','packages/cli/dist']) fs.rmSync(dir, { recursive: true, force: true });\"",
+    "build": "npm run build --workspaces",
+    "typecheck": "npm run build --workspace @vault-agent/core && npm run build --workspace @vault-agent/server && npm run typecheck --workspaces && tsc -p packages/core/tsconfig.portable.json",
+    "lint": "eslint packages/*/src",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run --exclude packages/cli/test/mcp-stdio.test.ts --exclude packages/cli/test/serve-mcp-flags.test.ts --exclude packages/core/test/portable-package.test.ts",
+    "test:dist": "vitest run packages/cli/test/mcp-stdio.test.ts packages/cli/test/serve-mcp-flags.test.ts packages/core/test/portable-package.test.ts",
+    "test:watch": "vitest --exclude packages/cli/test/mcp-stdio.test.ts --exclude packages/cli/test/serve-mcp-flags.test.ts --exclude packages/core/test/portable-package.test.ts",
+    "dev:server": "tsx packages/server/src/main.ts",
+    "build:cloudflare": "npm run build --prefix packages/cloudflare -- --config ../../wrangler.json",
+    "deploy:cloudflare": "npm run deploy --prefix packages/cloudflare -- --config ../../wrangler.json"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "@typescript-eslint/eslint-plugin": "^8.32.0",
+    "@typescript-eslint/parser": "^8.32.0",
+    "esbuild": "^0.28.1",
+    "eslint": "^9.26.0",
+    "prettier": "^3.5.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.1.0"
+  },
+  "cloudflare": {
+    "bindings": {
+      "VAULT_ID": {
+        "description": "Create a new UUID v4 with node -p \"crypto.randomUUID()\". Keep it stable after first upload."
+      },
+      "READ_TOKEN": {
+        "description": "Generate an independent 64-character lowercase hex token with openssl rand -hex 32."
+      },
+      "ADMIN_TOKEN": {
+        "description": "Generate a different 64-character lowercase hex token. Allows scoped upload and indexing."
+      },
+      "SOURCE": {
+        "description": "Private source, staging and immutable vault snapshots; do not enable public bucket access."
+      },
+      "DB": {
+        "description": "Metadata, lexical indexes, checkpoints and retained embedding cache."
+      }
+    }
+  }
+}

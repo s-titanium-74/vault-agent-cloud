@@ -1,0 +1,1225 @@
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
+import { IndexStore } from "../src/index-store.js";
+import { search } from "../src/search.js";
+import { getRelated } from "../src/related.js";
+import { SearchError } from "../src/errors.js";
+import { Config, DEFAULT_CONFIG } from "../src/config.js";
+import { EmbeddingProvider } from "../src/embedding.js";
+import { noteIdFromPath, vaultIdentity } from "../src/identifiers.js";
+import {
+  DEFAULT_EXCLUDE_PATTERNS,
+  INDEX_SCHEMA_VERSION,
+  MAX_SNIPPET_LENGTH,
+} from "../src/schemas.js";
+
+function createTestVault(): string {
+  const vaultDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), "vault-agent-search-"),
+  );
+
+  fs.writeFileSync(
+    path.join(vaultDir, "Alpha.md"),
+    `---
+title: "Alpha Note"
+tags:
+  - alpha
+  - search
+---
+
+# Alpha Note
+
+Alpha content about lexical search and indexing systems.`,
+  );
+
+  fs.writeFileSync(
+    path.join(vaultDir, "Beta.md"),
+    `---
+title: "Beta Note"
+tags:
+  - beta
+  - retrieval
+---
+
+# Beta Note
+
+Beta content about embedding retrieval and vector similarity.`,
+  );
+
+  return vaultDir;
+}
+
+function createSpecVault(): string {
+  const vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), "vault-agent-spec-"));
+
+  fs.writeFileSync(
+    path.join(vaultDir, "AliasTagged.md"),
+    `---
+title: "Alias Tagged Note"
+aliases:
+  - "RareAliasTerm"
+tags:
+  - "rare-tag"
+---
+
+# Alias Tagged Note
+
+The body intentionally omits the searchable alias and tag values.`,
+  );
+
+  fs.writeFileSync(
+    path.join(vaultDir, "Source.md"),
+    `# Source
+
+See [[Destination]] for linked context.`,
+  );
+
+  fs.writeFileSync(
+    path.join(vaultDir, "Destination.md"),
+    `---
+title: "Remote Candidate"
+---
+
+# Remote Candidate
+
+An orbiting subject with separate vocabulary.`,
+  );
+
+  fs.writeFileSync(
+    path.join(vaultDir, "ShortSecret.md"),
+    `---
+title: "Compact Result Target"
+---
+
+# Compact Result Target
+
+DO_NOT_LEAK_FULL_BODY_IN_SEARCH.`,
+  );
+
+  fs.writeFileSync(
+    path.join(vaultDir, "LongSnippet.md"),
+    `# Long Snippet Note
+
+${"lexical ".repeat(80)}This body is long enough to produce a compact snippet without returning the full chunk.`,
+  );
+
+  return vaultDir;
+}
+
+function createFilterVault(): string {
+  const vaultDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), "vault-agent-filter-"),
+  );
+  fs.mkdirSync(path.join(vaultDir, "Projects", "Active"), {
+    recursive: true,
+  });
+  fs.mkdirSync(path.join(vaultDir, "Projects", "Archive"), {
+    recursive: true,
+  });
+  fs.mkdirSync(path.join(vaultDir, "ProjectsOld"), { recursive: true });
+
+  fs.writeFileSync(
+    path.join(vaultDir, "Projects", "Active", "Privacy.md"),
+    `---
+title: "Active Privacy"
+tags:
+  - privacy
+  - meeting
+type: note
+status: active
+---
+
+# Active Privacy
+
+Shared filtered topic about local embedding privacy.`,
+  );
+
+  fs.writeFileSync(
+    path.join(vaultDir, "Projects", "Archive", "OldPrivacy.md"),
+    `---
+title: "Archived Privacy"
+tags:
+  - privacy
+  - archive
+type: note
+status: archived
+---
+
+# Archived Privacy
+
+Shared filtered topic about local embedding privacy.`,
+  );
+
+  fs.writeFileSync(
+    path.join(vaultDir, "ProjectsOld", "LegacyPrivacy.md"),
+    `---
+title: "Legacy Privacy"
+tags:
+  - privacy
+type: note
+status: active
+---
+
+# Legacy Privacy
+
+Shared filtered topic about local embedding privacy.`,
+  );
+
+  fs.writeFileSync(
+    path.join(vaultDir, "Root.md"),
+    `---
+title: "Root Privacy"
+tags:
+  - root
+type: memo
+status: active
+---
+
+# Root Privacy
+
+Shared filtered topic about local embedding privacy.`,
+  );
+
+  return vaultDir;
+}
+
+function createDeepFilteredVault(): string {
+  const vaultDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), "vault-agent-deep-filter-"),
+  );
+  fs.mkdirSync(path.join(vaultDir, "Projects"), { recursive: true });
+
+  for (let i = 0; i < 140; i++) {
+    fs.writeFileSync(
+      path.join(vaultDir, `Distractor-${String(i).padStart(3, "0")}.md`),
+      `---
+title: "Distractor ${i}"
+tags:
+  - general
+---
+
+# Distractor ${i}
+
+needleterm needleterm needleterm needleterm needleterm common ranking text.`,
+    );
+  }
+
+  fs.writeFileSync(
+    path.join(vaultDir, "Projects", "Target.md"),
+    `---
+title: "Filtered Target"
+tags:
+  - target
+status: active
+---
+
+# Filtered Target
+
+needleterm appears here once.`,
+  );
+
+  return vaultDir;
+}
+
+function createTestConfig(vaultRoot: string, indexDir: string): Config {
+  return {
+    ...structuredClone(DEFAULT_CONFIG),
+    vault: { root: vaultRoot, exclude: [] },
+    server: { ...DEFAULT_CONFIG.server },
+    index: { dir: indexDir },
+    embedding: { ...DEFAULT_CONFIG.embedding },
+    cors: { ...DEFAULT_CONFIG.cors },
+  };
+}
+
+describe("search", () => {
+  let vaultDir: string;
+  let indexDir: string;
+  let config: Config;
+
+  beforeEach(() => {
+    vaultDir = createTestVault();
+    indexDir = fs.mkdtempSync(path.join(os.tmpdir(), "vault-agent-idx-"));
+    config = createTestConfig(vaultDir, indexDir);
+  });
+
+  afterEach(() => {
+    fs.rmSync(vaultDir, { recursive: true, force: true });
+    fs.rmSync(indexDir, { recursive: true, force: true });
+  });
+
+  it("throws INDEX_NOT_FOUND when no manifest exists", async () => {
+    const resolvedVault = path.resolve(vaultDir);
+    const dbPath = path.join(
+      indexDir,
+      vaultIdentity(resolvedVault),
+      "index.sqlite",
+    );
+    const store = await IndexStore.open(dbPath);
+
+    try {
+      await expect(
+        search(store, "test query", "lexical", 10, config),
+      ).rejects.toMatchObject({
+        code: "INDEX_NOT_FOUND",
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("returns empty results for whitespace-only query after indexing", async () => {
+    const resolvedVault = path.resolve(vaultDir);
+    const dbPath = path.join(
+      indexDir,
+      vaultIdentity(resolvedVault),
+      "index.sqlite",
+    );
+    const store = await IndexStore.open(dbPath);
+
+    const manifest = {
+      schemaVersion: INDEX_SCHEMA_VERSION,
+      vaultIdentity: vaultIdentity(resolvedVault),
+      indexedFileExtensions: [".md", ".markdown"],
+      effectiveExcludePatterns: [".obsidian/", ".git/"],
+      targetChunkSize: 2000,
+      maxChunkSize: 4000,
+      embeddingModel: null,
+      embeddingDimension: null,
+      noteCount: 2,
+      chunkCount: 2,
+      indexedAt: Date.now(),
+    };
+    store.setManifest(manifest);
+
+    const { indexVault } = await import("../src/indexer.js");
+    await indexVault(config);
+
+    try {
+      const result = await search(store, "   ", "lexical", 10, config);
+      expect(result.results).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("indexes allowlisted frontmatter aliases and tags for lexical search", async () => {
+    fs.rmSync(vaultDir, { recursive: true, force: true });
+    vaultDir = createSpecVault();
+    config = createTestConfig(vaultDir, indexDir);
+
+    const { indexVault } = await import("../src/indexer.js");
+    await indexVault(config);
+
+    const resolvedVault = path.resolve(vaultDir);
+    const dbPath = path.join(
+      indexDir,
+      vaultIdentity(resolvedVault),
+      "index.sqlite",
+    );
+    const store = await IndexStore.open(dbPath);
+
+    try {
+      const aliasResult = await search(
+        store,
+        "RareAliasTerm",
+        "lexical",
+        10,
+        config,
+      );
+      expect(aliasResult.results.some((r) => r.path === "AliasTagged.md")).toBe(
+        true,
+      );
+
+      const tagResult = await search(store, "rare-tag", "lexical", 10, config);
+      expect(tagResult.results.some((r) => r.path === "AliasTagged.md")).toBe(
+        true,
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  it("keeps search results compact and omits full retrievable content", async () => {
+    fs.rmSync(vaultDir, { recursive: true, force: true });
+    vaultDir = createSpecVault();
+    config = createTestConfig(vaultDir, indexDir);
+
+    const { indexVault } = await import("../src/indexer.js");
+    await indexVault(config);
+
+    const resolvedVault = path.resolve(vaultDir);
+    const dbPath = path.join(
+      indexDir,
+      vaultIdentity(resolvedVault),
+      "index.sqlite",
+    );
+    const store = await IndexStore.open(dbPath);
+
+    try {
+      const shortResult = await search(
+        store,
+        "Compact Result Target",
+        "lexical",
+        10,
+        config,
+      );
+      const shortItem = shortResult.results.find(
+        (r) => r.path === "ShortSecret.md",
+      );
+      expect(shortItem).toBeDefined();
+      expect(shortItem).not.toHaveProperty("content");
+      expect(shortItem!.snippet).toBe("");
+      expect(JSON.stringify(shortItem)).not.toContain(
+        "DO_NOT_LEAK_FULL_BODY_IN_SEARCH",
+      );
+
+      const longResult = await search(store, "lexical", "lexical", 10, config);
+      const longItem = longResult.results.find(
+        (r) => r.path === "LongSnippet.md",
+      );
+      expect(longItem).toBeDefined();
+      expect(longItem).not.toHaveProperty("content");
+      expect(longItem!.snippet.length).toBeLessThanOrEqual(
+        MAX_SNIPPET_LENGTH + 3,
+      );
+
+      const chunk = store.getChunkById(longItem!.id);
+      expect(longItem!.snippet).not.toBe(chunk?.content);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("does not return zero-score lexical results", async () => {
+    const { indexVault } = await import("../src/indexer.js");
+    await indexVault(config);
+
+    const resolvedVault = path.resolve(vaultDir);
+    const dbPath = path.join(
+      indexDir,
+      vaultIdentity(resolvedVault),
+      "index.sqlite",
+    );
+    const store = await IndexStore.open(dbPath);
+
+    try {
+      const result = await search(store, "search", "lexical", 10, config);
+
+      expect(result.results.length).toBeGreaterThan(0);
+      expect(result.results.every((r) => r.score > 0)).toBe(true);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("filters search results by path, tags, excluded tags, and frontmatter", async () => {
+    fs.rmSync(vaultDir, { recursive: true, force: true });
+    vaultDir = createFilterVault();
+    config = createTestConfig(vaultDir, indexDir);
+
+    const { indexVault } = await import("../src/indexer.js");
+    await indexVault(config);
+
+    const resolvedVault = path.resolve(vaultDir);
+    const dbPath = path.join(
+      indexDir,
+      vaultIdentity(resolvedVault),
+      "index.sqlite",
+    );
+    const store = await IndexStore.open(dbPath);
+
+    try {
+      const pathResult = await search(
+        store,
+        "filtered topic privacy",
+        "lexical",
+        10,
+        config,
+        undefined,
+        { pathPrefix: ["Projects"] },
+      );
+      expect(pathResult.results.map((r) => r.path).sort()).toEqual([
+        "Projects/Active/Privacy.md",
+        "Projects/Archive/OldPrivacy.md",
+      ]);
+
+      const excludeResult = await search(
+        store,
+        "filtered topic privacy",
+        "lexical",
+        10,
+        config,
+        undefined,
+        {
+          pathPrefix: ["Projects"],
+          excludePathPrefix: ["Projects/Archive"],
+          tags: ["privacy"],
+          excludeTags: ["archive"],
+          frontmatter: { type: ["note"], status: ["active"] },
+        },
+      );
+      expect(excludeResult.results.map((r) => r.path)).toEqual([
+        "Projects/Active/Privacy.md",
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("validates structured search filters with stable error codes", async () => {
+    fs.rmSync(vaultDir, { recursive: true, force: true });
+    vaultDir = createFilterVault();
+    config = createTestConfig(vaultDir, indexDir);
+
+    const { indexVault } = await import("../src/indexer.js");
+    await indexVault(config);
+
+    const resolvedVault = path.resolve(vaultDir);
+    const dbPath = path.join(
+      indexDir,
+      vaultIdentity(resolvedVault),
+      "index.sqlite",
+    );
+    const store = await IndexStore.open(dbPath);
+
+    try {
+      await expect(
+        search(
+          store,
+          "filtered topic privacy",
+          "lexical",
+          10,
+          config,
+          undefined,
+          { pathPrefix: ["../private"] },
+        ),
+      ).rejects.toMatchObject({ code: "INVALID_PATH_FILTER" });
+
+      await expect(
+        search(
+          store,
+          "filtered topic privacy",
+          "lexical",
+          10,
+          config,
+          undefined,
+          { pathPrefix: ["%2Fprivate"] },
+        ),
+      ).rejects.toMatchObject({ code: "INVALID_PATH_FILTER" });
+
+      await expect(
+        search(
+          store,
+          "filtered topic privacy",
+          "lexical",
+          10,
+          config,
+          undefined,
+          { pathPrefix: ["%5Cprivate"] },
+        ),
+      ).rejects.toMatchObject({ code: "INVALID_PATH_FILTER" });
+
+      await expect(
+        search(
+          store,
+          "filtered topic privacy",
+          "lexical",
+          10,
+          config,
+          undefined,
+          { pathPrefix: ["file%3Aprivate"] },
+        ),
+      ).rejects.toMatchObject({ code: "INVALID_PATH_FILTER" });
+
+      await expect(
+        search(
+          store,
+          "filtered topic privacy",
+          "lexical",
+          10,
+          config,
+          undefined,
+          { tags: ["#"] },
+        ),
+      ).rejects.toMatchObject({ code: "INVALID_TAG_FILTER" });
+
+      await expect(
+        search(
+          store,
+          "filtered topic privacy",
+          "lexical",
+          10,
+          config,
+          undefined,
+          { frontmatter: { type: [""] } },
+        ),
+      ).rejects.toMatchObject({ code: "INVALID_FRONTMATTER_FILTER" });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("applies filters before result limiting", async () => {
+    fs.rmSync(vaultDir, { recursive: true, force: true });
+    vaultDir = createDeepFilteredVault();
+    config = createTestConfig(vaultDir, indexDir);
+
+    const { indexVault } = await import("../src/indexer.js");
+    await indexVault(config);
+
+    const resolvedVault = path.resolve(vaultDir);
+    const dbPath = path.join(
+      indexDir,
+      vaultIdentity(resolvedVault),
+      "index.sqlite",
+    );
+    const store = await IndexStore.open(dbPath);
+
+    try {
+      const result = await search(
+        store,
+        "needleterm",
+        "lexical",
+        1,
+        config,
+        undefined,
+        { pathPrefix: ["Projects"] },
+      );
+
+      expect(result.results.map((r) => r.path)).toEqual(["Projects/Target.md"]);
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe("getRelated", () => {
+  let vaultDir: string;
+  let indexDir: string;
+  let config: Config;
+
+  beforeEach(() => {
+    vaultDir = createTestVault();
+    indexDir = fs.mkdtempSync(path.join(os.tmpdir(), "vault-agent-idx-"));
+    config = createTestConfig(vaultDir, indexDir);
+  });
+
+  afterEach(() => {
+    fs.rmSync(vaultDir, { recursive: true, force: true });
+    fs.rmSync(indexDir, { recursive: true, force: true });
+  });
+
+  it("throws INDEX_NOT_FOUND when no manifest exists", async () => {
+    const resolvedVault = path.resolve(vaultDir);
+    const dbPath = path.join(
+      indexDir,
+      vaultIdentity(resolvedVault),
+      "index.sqlite",
+    );
+    const store = await IndexStore.open(dbPath);
+
+    try {
+      await expect(
+        getRelated(
+          store,
+          "note",
+          "abcd1234abcd1234abcd1234abcd1234",
+          "lexical",
+          10,
+          config,
+        ),
+      ).rejects.toMatchObject({
+        code: "INDEX_NOT_FOUND",
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("does not return weak positive-score embedding related candidates", async () => {
+    const sourceId = "11111111111111111111111111111111";
+    const configWithEmbedding = createTestConfig(vaultDir, indexDir);
+    configWithEmbedding.embedding.enabled = true;
+    configWithEmbedding.embedding.model = "test-model";
+
+    const store = {
+      getManifest: () => ({
+        schemaVersion: INDEX_SCHEMA_VERSION,
+        vaultIdentity: vaultIdentity(path.resolve(vaultDir)),
+        indexedFileExtensions: [".md", ".markdown"],
+        effectiveExcludePatterns: [],
+        targetChunkSize: 2000,
+        maxChunkSize: 4000,
+        embeddingModel: "test-model",
+        embeddingDimension: 8,
+        noteCount: 2,
+        chunkCount: 2,
+        indexedAt: Date.now(),
+      }),
+      checkStaleness: () => ({
+        stale: false,
+        incompatible: false,
+        details: "",
+      }),
+      isVecAvailable: () => true,
+      isEmbeddingReady: () => true,
+      getNote: () => ({ links_json: "[]" }),
+      getChunkById: () => ({ embedding_key: "legacy" }),
+      getChunks: (noteId: string) =>
+        noteId === sourceId
+          ? [
+              {
+                note_id: sourceId,
+                chunk_index: 0,
+                embedding_input_text: "source context",
+              },
+            ]
+          : [],
+      searchLexical: () => [],
+      searchTrigrams: () => [],
+      searchEmbeddingVectors: () => [
+        { chunk_id: "22222222222222222222222222222222:0", distance: 2 },
+      ],
+    } as unknown as IndexStore;
+    const provider = {
+      embed: async () => ({
+        embeddings: [new Float32Array(8).fill(1)],
+        model: "test-model",
+        dimension: 8,
+      }),
+    } as unknown as EmbeddingProvider;
+
+    const result = await getRelated(
+      store,
+      "note",
+      sourceId,
+      "embedding",
+      10,
+      configWithEmbedding,
+      provider,
+    );
+
+    expect(result.results).toEqual([]);
+  });
+
+  it("throws INVALID_ID for invalid note ID", async () => {
+    const resolvedVault = path.resolve(vaultDir);
+    const dbPath = path.join(
+      indexDir,
+      vaultIdentity(resolvedVault),
+      "index.sqlite",
+    );
+    const store = await IndexStore.open(dbPath);
+
+    const manifest = {
+      schemaVersion: INDEX_SCHEMA_VERSION,
+      vaultIdentity: vaultIdentity(resolvedVault),
+      indexedFileExtensions: [".md", ".markdown"],
+      effectiveExcludePatterns: [...DEFAULT_EXCLUDE_PATTERNS],
+      targetChunkSize: 2000,
+      maxChunkSize: 4000,
+      embeddingModel: null,
+      embeddingDimension: null,
+      noteCount: 2,
+      chunkCount: 2,
+      indexedAt: Date.now(),
+    };
+    store.setManifest(manifest);
+
+    try {
+      await expect(
+        getRelated(store, "note", "invalid-id", "lexical", 10, config),
+      ).rejects.toMatchObject({
+        code: "INVALID_ID",
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("throws INVALID_ID for invalid chunk ID format", async () => {
+    const resolvedVault = path.resolve(vaultDir);
+    const dbPath = path.join(
+      indexDir,
+      vaultIdentity(resolvedVault),
+      "index.sqlite",
+    );
+    const store = await IndexStore.open(dbPath);
+
+    const manifest = {
+      schemaVersion: INDEX_SCHEMA_VERSION,
+      vaultIdentity: vaultIdentity(resolvedVault),
+      indexedFileExtensions: [".md", ".markdown"],
+      effectiveExcludePatterns: [...DEFAULT_EXCLUDE_PATTERNS],
+      targetChunkSize: 2000,
+      maxChunkSize: 4000,
+      embeddingModel: null,
+      embeddingDimension: null,
+      noteCount: 2,
+      chunkCount: 2,
+      indexedAt: Date.now(),
+    };
+    store.setManifest(manifest);
+
+    try {
+      await expect(
+        getRelated(
+          store,
+          "chunk",
+          "not-a-valid-chunk-id",
+          "lexical",
+          10,
+          config,
+        ),
+      ).rejects.toMatchObject({
+        code: "INVALID_ID",
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("handles chunk-type input for related notes", async () => {
+    const { indexVault } = await import("../src/indexer.js");
+    await indexVault(config);
+
+    const resolvedVault = path.resolve(vaultDir);
+    const dbPath = path.join(
+      indexDir,
+      vaultIdentity(resolvedVault),
+      "index.sqlite",
+    );
+    const store = await IndexStore.open(dbPath);
+
+    try {
+      const notes = store.getAllNotes();
+      const noteId = notes[0]!.note_id as string;
+      const chunkId = `${noteId}:0`;
+
+      const result = await getRelated(
+        store,
+        "chunk",
+        chunkId,
+        "lexical",
+        10,
+        config,
+      );
+      expect(result.input.type).toBe("chunk");
+      expect(result.input.id).toBe(chunkId);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("returns NOTE_NOT_FOUND for non-existent note ID", async () => {
+    const { indexVault } = await import("../src/indexer.js");
+    await indexVault(config);
+
+    const resolvedVault = path.resolve(vaultDir);
+    const dbPath = path.join(
+      indexDir,
+      vaultIdentity(resolvedVault),
+      "index.sqlite",
+    );
+    const store = await IndexStore.open(dbPath);
+
+    try {
+      await expect(
+        getRelated(
+          store,
+          "note",
+          "00000000000000000000000000000000",
+          "lexical",
+          10,
+          config,
+        ),
+      ).rejects.toThrow(SearchError);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("excludes the input note and can return resolved wikilink candidates", async () => {
+    fs.rmSync(vaultDir, { recursive: true, force: true });
+    vaultDir = createSpecVault();
+    config = createTestConfig(vaultDir, indexDir);
+
+    const { indexVault } = await import("../src/indexer.js");
+    await indexVault(config);
+
+    const resolvedVault = path.resolve(vaultDir);
+    const dbPath = path.join(
+      indexDir,
+      vaultIdentity(resolvedVault),
+      "index.sqlite",
+    );
+    const store = await IndexStore.open(dbPath);
+
+    try {
+      const sourceId = noteIdFromPath("Source.md");
+      const destinationId = noteIdFromPath("Destination.md");
+
+      const result = await getRelated(
+        store,
+        "note",
+        sourceId,
+        "lexical",
+        10,
+        config,
+      );
+
+      expect(result.results.every((r) => r.noteId !== sourceId)).toBe(true);
+      expect(result.results.every((r) => r.score > 0)).toBe(true);
+      expect(result.results.some((r) => r.noteId === destinationId)).toBe(true);
+      expect(
+        result.results.find((r) => r.noteId === destinationId)?.reason,
+      ).toBe("related_link");
+      expect(JSON.stringify(result.results)).not.toContain(
+        "See [[Destination]]",
+      );
+      expect(JSON.stringify(result.results)).not.toContain(
+        "An orbiting subject with separate vocabulary.",
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  it("keeps duplicate filename-stem wikilinks unresolved", async () => {
+    fs.rmSync(vaultDir, { recursive: true, force: true });
+    vaultDir = createSpecVault();
+    fs.mkdirSync(path.join(vaultDir, "First"), { recursive: true });
+    fs.mkdirSync(path.join(vaultDir, "Second"), { recursive: true });
+    fs.writeFileSync(
+      path.join(vaultDir, "First", "Duplicate.md"),
+      "# First Candidate\n\nAlpha-only content.",
+    );
+    fs.writeFileSync(
+      path.join(vaultDir, "Second", "Duplicate.md"),
+      "# Second Candidate\n\nBeta-only content.",
+    );
+    fs.writeFileSync(
+      path.join(vaultDir, "Ambiguous.md"),
+      "# Ambiguous\n\nSee [[Duplicate]] for context.",
+    );
+    config = createTestConfig(vaultDir, indexDir);
+
+    const { indexVault } = await import("../src/indexer.js");
+    await indexVault(config);
+
+    const resolvedVault = path.resolve(vaultDir);
+    const dbPath = path.join(
+      indexDir,
+      vaultIdentity(resolvedVault),
+      "index.sqlite",
+    );
+    const store = await IndexStore.open(dbPath);
+
+    try {
+      const ambiguousId = noteIdFromPath("Ambiguous.md");
+      const ambiguous = store.getNote(ambiguousId);
+      expect(ambiguous).not.toBeNull();
+
+      const links = JSON.parse(ambiguous!.links_json as string) as Array<{
+        target: string;
+        resolved: string | null;
+      }>;
+      expect(links).toContainEqual(
+        expect.objectContaining({ target: "Duplicate", resolved: null }),
+      );
+
+      const result = await getRelated(
+        store,
+        "note",
+        ambiguousId,
+        "lexical",
+        10,
+        config,
+      );
+      expect(
+        result.results.some(
+          (r) =>
+            r.noteId === noteIdFromPath("First/Duplicate.md") ||
+            r.noteId === noteIdFromPath("Second/Duplicate.md"),
+        ),
+      ).toBe(false);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("resolves incremental wikilinks against unchanged indexed notes", async () => {
+    fs.rmSync(vaultDir, { recursive: true, force: true });
+    vaultDir = createSpecVault();
+    fs.writeFileSync(
+      path.join(vaultDir, "IncrementalSource.md"),
+      "# Incremental Source\n\nInitial content without a link.",
+    );
+    config = createTestConfig(vaultDir, indexDir);
+
+    const { indexVault } = await import("../src/indexer.js");
+    await indexVault(config);
+
+    fs.writeFileSync(
+      path.join(vaultDir, "IncrementalSource.md"),
+      "# Incremental Source\n\nNow see [[Destination]] for linked context.",
+    );
+    const incremental = await indexVault(config);
+    expect(incremental.notesSkipped).toBeGreaterThan(0);
+
+    const resolvedVault = path.resolve(vaultDir);
+    const dbPath = path.join(
+      indexDir,
+      vaultIdentity(resolvedVault),
+      "index.sqlite",
+    );
+    const store = await IndexStore.open(dbPath);
+
+    try {
+      const sourceId = noteIdFromPath("IncrementalSource.md");
+      const destinationId = noteIdFromPath("Destination.md");
+      const source = store.getNote(sourceId);
+      expect(source).not.toBeNull();
+
+      const links = JSON.parse(source!.links_json as string) as Array<{
+        target: string;
+        resolved: string | null;
+      }>;
+      expect(links).toContainEqual(
+        expect.objectContaining({
+          target: "Destination",
+          resolved: destinationId,
+        }),
+      );
+
+      const result = await getRelated(
+        store,
+        "note",
+        sourceId,
+        "lexical",
+        10,
+        config,
+      );
+      expect(result.results.some((r) => r.noteId === destinationId)).toBe(true);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("resolves incremental wikilinks against unchanged H1-derived titles", async () => {
+    fs.rmSync(vaultDir, { recursive: true, force: true });
+    vaultDir = createSpecVault();
+    fs.writeFileSync(
+      path.join(vaultDir, "H1Target.md"),
+      "# Project Roadmap\n\nTarget content with a heading-derived title.",
+    );
+    fs.writeFileSync(
+      path.join(vaultDir, "H1Source.md"),
+      "# H1 Source\n\nInitial content without a link.",
+    );
+    config = createTestConfig(vaultDir, indexDir);
+
+    const { indexVault } = await import("../src/indexer.js");
+    await indexVault(config);
+
+    fs.writeFileSync(
+      path.join(vaultDir, "H1Source.md"),
+      "# H1 Source\n\nNow see [[Project Roadmap]] for linked context.",
+    );
+    const incremental = await indexVault(config);
+    expect(incremental.notesSkipped).toBeGreaterThan(0);
+
+    const resolvedVault = path.resolve(vaultDir);
+    const dbPath = path.join(
+      indexDir,
+      vaultIdentity(resolvedVault),
+      "index.sqlite",
+    );
+    const store = await IndexStore.open(dbPath);
+
+    try {
+      const sourceId = noteIdFromPath("H1Source.md");
+      const targetId = noteIdFromPath("H1Target.md");
+      const source = store.getNote(sourceId);
+      expect(source).not.toBeNull();
+
+      const links = JSON.parse(source!.links_json as string) as Array<{
+        target: string;
+        resolved: string | null;
+      }>;
+      expect(links).toContainEqual(
+        expect.objectContaining({
+          target: "Project Roadmap",
+          resolved: targetId,
+        }),
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  it("keeps wikilinks unresolved when stem and title matches disagree", async () => {
+    fs.rmSync(vaultDir, { recursive: true, force: true });
+    vaultDir = createSpecVault();
+    fs.writeFileSync(
+      path.join(vaultDir, "Roadmap.md"),
+      "# File Stem Candidate\n\nStem-only candidate.",
+    );
+    fs.writeFileSync(
+      path.join(vaultDir, "Titled.md"),
+      `---
+title: "Roadmap"
+---
+
+# Different Title Candidate
+
+Title-only candidate.`,
+    );
+    fs.writeFileSync(
+      path.join(vaultDir, "CrossSource.md"),
+      "# Cross Source\n\nSee [[Roadmap]] for context.",
+    );
+    config = createTestConfig(vaultDir, indexDir);
+
+    const { indexVault } = await import("../src/indexer.js");
+    await indexVault(config);
+
+    const resolvedVault = path.resolve(vaultDir);
+    const dbPath = path.join(
+      indexDir,
+      vaultIdentity(resolvedVault),
+      "index.sqlite",
+    );
+    const store = await IndexStore.open(dbPath);
+
+    try {
+      const sourceId = noteIdFromPath("CrossSource.md");
+      const source = store.getNote(sourceId);
+      expect(source).not.toBeNull();
+
+      const links = JSON.parse(source!.links_json as string) as Array<{
+        target: string;
+        resolved: string | null;
+      }>;
+      expect(links).toContainEqual(
+        expect.objectContaining({ target: "Roadmap", resolved: null }),
+      );
+
+      const result = await getRelated(
+        store,
+        "note",
+        sourceId,
+        "lexical",
+        10,
+        config,
+      );
+      expect(
+        result.results.some(
+          (r) =>
+            r.noteId === noteIdFromPath("Roadmap.md") ||
+            r.noteId === noteIdFromPath("Titled.md"),
+        ),
+      ).toBe(false);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("blocks search in incompatible state with reindex-required message", async () => {
+    const { indexVault } = await import("../src/indexer.js");
+    await indexVault(config);
+
+    const resolvedVault = path.resolve(vaultDir);
+    const dbPath = path.join(
+      indexDir,
+      vaultIdentity(resolvedVault),
+      "index.sqlite",
+    );
+    const store = await IndexStore.open(dbPath);
+
+    const manifest = store.getManifest();
+    store.setManifest({
+      ...manifest!,
+      schemaVersion: manifest!.schemaVersion + 1,
+    });
+
+    try {
+      await expect(
+        search(store, "Welcome", "lexical", 10, config),
+      ).rejects.toMatchObject({
+        code: "INDEX_SCHEMA_INCOMPATIBLE",
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("includes freshness warnings in related results when index has incompatibility detected", async () => {
+    const { indexVault } = await import("../src/indexer.js");
+    await indexVault(config);
+
+    const resolvedVault = path.resolve(vaultDir);
+    const dbPath = path.join(
+      indexDir,
+      vaultIdentity(resolvedVault),
+      "index.sqlite",
+    );
+    const store = await IndexStore.open(dbPath);
+
+    const manifest = store.getManifest();
+    store.setManifest({
+      ...manifest!,
+      schemaVersion: manifest!.schemaVersion + 1,
+    });
+
+    try {
+      await expect(
+        getRelated(
+          store,
+          "note",
+          "abcd1234abcd1234abcd1234abcd1234",
+          "lexical",
+          10,
+          config,
+        ),
+      ).rejects.toMatchObject({
+        code: "INDEX_SCHEMA_INCOMPATIBLE",
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("allows get when ID resolves safely even in incompatible state", async () => {
+    const { indexVault } = await import("../src/indexer.js");
+    await indexVault(config);
+
+    const resolvedVault = path.resolve(vaultDir);
+    const dbPath = path.join(
+      indexDir,
+      vaultIdentity(resolvedVault),
+      "index.sqlite",
+    );
+    const store = await IndexStore.open(dbPath);
+
+    const notes = store.getAllNotes();
+    const validNoteId = notes[0]!.note_id as string;
+
+    try {
+      const result = await search(
+        store,
+        notes[0]!.path as string,
+        "lexical",
+        10,
+        config,
+      );
+      expect(result).toBeDefined();
+      expect(validNoteId).toBeDefined();
+    } finally {
+      store.close();
+    }
+  });
+});
